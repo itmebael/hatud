@@ -1,0 +1,13 @@
+.dart_tool/
+build/
+android/
+ios/
+windows/
+linux/
+macos/
+test/
+.git/
+.idea/
+.vscode/
+*.iml
+*.log

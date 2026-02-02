@@ -1,0 +1,2 @@
+C:/Users/Admin/flutterbooking_customer_app-main/android/app/.cxx/Debug/5w6j341e/armeabi-v7a/CMakeFiles/edit_cache.dir
+C:/Users/Admin/flutterbooking_customer_app-main/android/app/.cxx/Debug/5w6j341e/armeabi-v7a/CMakeFiles/rebuild_cache.dir
