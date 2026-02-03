@@ -40,6 +40,7 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
   double _estimatedFare = 0.0;
   String _driverName = "";
   String _driverPlate = "";
+  int _driverRating = 0;
   String _rideStatus = "Ready to Book";
 
   // Loaded profile
@@ -68,6 +69,11 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
   // Online drivers data
   List<DriverLocation> _onlineDrivers = [];
   bool _loadingDrivers = false;
+  
+  // Search filter state
+  String _searchQuery = '';
+  double? _minRatingFilter;
+  bool _showSearchFilters = false;
 
   // Ride history data
   List<RideHistoryEntry> _rideHistory = [];
@@ -414,6 +420,54 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
       final response = await query;
       final driversList = (response as List);
       final drivers = <DriverLocation>[];
+      final ratingSum = <String, double>{};
+      final ratingCount = <String, int>{};
+      final driverIds = driversList
+          .map((row) => row['id']?.toString())
+          .whereType<String>()
+          .where((id) => id.isNotEmpty)
+          .toList();
+
+      if (driverIds.isNotEmpty) {
+        const batchSize = 25;
+        for (var i = 0; i < driverIds.length; i += batchSize) {
+          final batch =
+              driverIds.sublist(i, math.min(i + batchSize, driverIds.length));
+          final driverFilter =
+              batch.map((id) => 'driver_id.eq.$id').join(',');
+          final ratingsResponse = await client
+              .from('bookings')
+              .select('driver_id, passenger_rating, status')
+              .or(driverFilter)
+              .not('passenger_rating', 'is', null);
+
+          for (final row in (ratingsResponse as List)) {
+            final driverId = row['driver_id']?.toString();
+            if (driverId == null) {
+              continue;
+            }
+            final status = row['status']?.toString().toLowerCase() ?? '';
+            if (!(status == 'completed' ||
+                status.contains('completed') ||
+                status == 'finished' ||
+                status == 'done')) {
+              continue;
+            }
+            final ratingValue = row['passenger_rating'];
+            double? rating;
+            if (ratingValue is num) {
+              rating = ratingValue.toDouble();
+            } else if (ratingValue is String) {
+              rating = double.tryParse(ratingValue);
+            }
+            if (rating == null || rating < 1 || rating > 5) {
+              continue;
+            }
+            ratingSum[driverId] = (ratingSum[driverId] ?? 0) + rating;
+            ratingCount[driverId] = (ratingCount[driverId] ?? 0) + 1;
+          }
+        }
+      }
 
       print('Raw query returned ${driversList.length} rows');
 
@@ -457,6 +511,14 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
             driverLng = _currentLocation.longitude;
           }
 
+          final totalRating = ratingSum[driverId];
+          final totalCount = ratingCount[driverId];
+          final averageRating = (totalRating != null &&
+                  totalCount != null &&
+                  totalCount > 0)
+              ? totalRating / totalCount
+              : null;
+
           drivers.add(
             DriverLocation(
               id: driverId,
@@ -466,6 +528,8 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
               longitude: driverLng,
               imageUrl: profileImage,
               isOnline: isOnline,
+              rating: averageRating,
+              ratingCount: totalCount,
             ),
           );
         }
@@ -539,7 +603,9 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
       if (d1.id != d2.id ||
           d1.latitude != d2.latitude ||
           d1.longitude != d2.longitude ||
-          d1.isOnline != d2.isOnline) {
+          d1.isOnline != d2.isOnline ||
+          d1.rating != d2.rating ||
+          d1.ratingCount != d2.ratingCount) {
         return false;
       }
     }
@@ -733,6 +799,8 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
               longitude: lng ?? _currentLocation.longitude,
               imageUrl: row['profile_image']?.toString(),
               isOnline: row['is_online'] as bool? ?? false,
+              rating: null,
+              ratingCount: null,
             );
           })
           .whereType<DriverLocation>()
@@ -756,6 +824,8 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
         email: 'demo.driver@hatud.app',
         latitude: _currentLocation.latitude,
         longitude: _currentLocation.longitude,
+        rating: null,
+        ratingCount: null,
       ),
     ];
   }
@@ -1271,7 +1341,13 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
         setState(() {
           _waitingForDriverResponse = false;
           _rideStatus = "Driver accepted!";
+          _showRoute = true; // Show route on map when booking is confirmed
         });
+        if (_pickupLatLng != null &&
+            _destinationLatLng != null &&
+            _routePoints.isEmpty) {
+          await _calculateRouteFromPickupToDestination();
+        }
       } else if (status == 'in_progress' || status == 'driver_arrived') {
         setState(() {
           _rideStatus =
@@ -1284,6 +1360,7 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
         _bookingTimer?.cancel();
         setState(() {
           _waitingForDriverResponse = false;
+          _showRoute = false; // Hide route when booking is cancelled or completed
           _hasActiveBooking = false;
           _currentBookingId = null;
           _driverArrivalConfirmationShown = false;
@@ -1760,6 +1837,7 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
         _bookingTimerSeconds = 30;
         _currentBookingId = null;
         _hasActiveBooking = false;
+        _showRoute = false; // Hide route when booking is manually cancelled
       });
 
       // Find next nearest driver
@@ -2098,6 +2176,7 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
         _currentBookingId = null;
         _waitingForDriverResponse = false;
         _rideStatus = "Ride cancelled";
+        _showRoute = false; // Hide route when booking is cancelled
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
@@ -2922,7 +3001,8 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
       final polylines = <flutter_map.Polyline>[];
       // Show route from pickup to destination if both are set
       // Keep showing the route unless trip is completed or finished
-      final shouldShowRoute = _pickupLatLng != null &&
+      final shouldShowRoute = _showRoute &&
+          _pickupLatLng != null &&
           _destinationLatLng != null &&
           _routePoints.isNotEmpty &&
           _rideStatus != "Trip completed" &&
@@ -3055,7 +3135,8 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
     final polylines = <Polyline>{};
     // Show route from pickup to destination if both are set
     // Keep showing the route unless trip is completed or finished
-    final shouldShowRoute = _pickupLatLng != null &&
+    final shouldShowRoute = _showRoute &&
+        _pickupLatLng != null &&
         _destinationLatLng != null &&
         _routePoints.isNotEmpty &&
         _rideStatus != "Trip completed" &&
@@ -3367,6 +3448,101 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
           ),
           SizedBox(
               height: ResponsiveHelper.responsiveHeight(context,
+                  mobile: 8, tablet: 10, desktop: 12)),
+          
+          // Search and filter section
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  decoration: InputDecoration(
+                    hintText: "Search drivers by name",
+                    hintStyle: TextStyle(color: Colors.white70),
+                    prefixIcon: Icon(Icons.search, color: Colors.white70),
+                    filled: true,
+                    fillColor: Colors.white.withOpacity(0.08),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide.none,
+                    ),
+                    contentPadding: EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: ResponsiveHelper.responsiveHeight(context, mobile: 8, tablet: 10, desktop: 12),
+                    ),
+                  ),
+                  style: TextStyle(color: Colors.white),
+                  onChanged: (value) {
+                    setState(() {
+                      _searchQuery = value;
+                    });
+                  },
+                ),
+              ),
+              SizedBox(width: 8),
+              IconButton(
+                icon: Icon(
+                  _showSearchFilters ? Icons.filter_alt : Icons.filter_alt_outlined,
+                  color: Colors.white,
+                  size: ResponsiveHelper.iconSize(context),
+                ),
+                onPressed: () {
+                  setState(() {
+                    _showSearchFilters = !_showSearchFilters;
+                  });
+                },
+                tooltip: "Filter by rating",
+              ),
+            ],
+          ),
+          
+          // Rating filter dropdown
+          if (_showSearchFilters)
+            Container(
+              margin: EdgeInsets.only(top: 8),
+              padding: EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    "Minimum Rating:",
+                    style: TextStyle(color: Colors.white70, fontSize: 14),
+                  ),
+                  SizedBox(height: 8),
+                  DropdownButtonFormField<double?>(
+                    value: _minRatingFilter,
+                    decoration: InputDecoration(
+                      filled: true,
+                      fillColor: Colors.white.withOpacity(0.12),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide.none,
+                      ),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    ),
+                    dropdownColor: Colors.grey[800],
+                    style: TextStyle(color: Colors.white, fontSize: 14),
+                    items: [
+                      DropdownMenuItem(value: null, child: Text("Any rating")),
+                      DropdownMenuItem(value: 4.0, child: Text("4.0 stars +")),
+                      DropdownMenuItem(value: 4.5, child: Text("4.5 stars +")),
+                      DropdownMenuItem(value: 5.0, child: Text("5.0 stars")),
+                    ],
+                    onChanged: (value) {
+                      setState(() {
+                        _minRatingFilter = value;
+                      });
+                    },
+                  ),
+                ],
+              ),
+            ),
+          
+          SizedBox(
+              height: ResponsiveHelper.responsiveHeight(context,
                   mobile: 12, tablet: 15, desktop: 20)),
           if (_loadingDrivers)
             Center(
@@ -3397,9 +3573,7 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
             )
           else
             Column(
-              children: _onlineDrivers
-                  .where((driver) => driver.isOnline)
-                  .map((driver) {
+              children: _getFilteredDrivers().map((driver) {
                 final bool isSelected = _selectedDriver?.id == driver.id;
                 return Container(
                   margin: EdgeInsets.only(
@@ -3510,6 +3684,36 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
                                       fontSize:
                                           ResponsiveHelper.smallSize(context),
                                     ),
+                                  ),
+                                ],
+                                if (driver.rating != null &&
+                                    driver.rating! > 0) ...[
+                                  SizedBox(height: 4),
+                                  Row(
+                                    children: [
+                                      Icon(Icons.star,
+                                          color: Colors.amber, size: 14),
+                                      SizedBox(width: 4),
+                                      Text(
+                                        driver.rating!.toStringAsFixed(1),
+                                        style: TextStyle(
+                                          color: Colors.white70,
+                                          fontSize:
+                                              ResponsiveHelper.smallSize(context),
+                                        ),
+                                      ),
+                                      if (driver.ratingCount != null) ...[
+                                        SizedBox(width: 4),
+                                        Text(
+                                          "(${driver.ratingCount})",
+                                          style: TextStyle(
+                                            color: Colors.white54,
+                                            fontSize: ResponsiveHelper.smallSize(
+                                                context),
+                                          ),
+                                        ),
+                                      ],
+                                    ],
                                   ),
                                 ],
                               ],
@@ -5085,8 +5289,6 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
                           destinationLatLng.longitude,
                         );
                         _calculatedDistanceKm = distanceMeters / 1000;
-                        // Calculate route from pickup to destination
-                        _calculateRouteFromPickupToDestination();
                       }
                     }
                   });
@@ -5433,15 +5635,15 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
                 style: TextStyle(fontWeight: FontWeight.bold)),
           ],
         ),
-        content: LayoutBuilder(
-          builder: (context, constraints) {
+        content: Builder(
+          builder: (context) {
             final isMobile = ResponsiveHelper.isMobile(context);
-            final maxWidth = ResponsiveHelper.responsiveWidth(
-              context,
-              mobile: constraints.maxWidth,
-              tablet: 500,
-              desktop: 600,
-            );
+            final screenWidth = MediaQuery.of(context).size.width;
+            final maxWidth = screenWidth < 600
+                ? screenWidth
+                : screenWidth < 1000
+                    ? 500.0
+                    : 600.0;
 
             return Center(
               child: ConstrainedBox(
@@ -5977,15 +6179,14 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
             Text("Settings", style: TextStyle(fontWeight: FontWeight.bold)),
           ],
         ),
-        content: LayoutBuilder(
-          builder: (context, constraints) {
-            final isMobile = ResponsiveHelper.isMobile(context);
-            final maxWidth = ResponsiveHelper.responsiveWidth(
-              context,
-              mobile: constraints.maxWidth,
-              tablet: 500,
-              desktop: 600,
-            );
+        content: Builder(
+          builder: (context) {
+            final screenWidth = MediaQuery.of(context).size.width;
+            final maxWidth = screenWidth < 600
+                ? screenWidth
+                : screenWidth < 1000
+                    ? 500.0
+                    : 600.0;
 
             return Center(
               child: ConstrainedBox(
@@ -6761,8 +6962,6 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
       _selectedPickupLocation = pickupAddress;
       _selectedDestination = destinationAddress;
     });
-    // Calculate route from pickup to destination
-    _calculateRouteFromPickupToDestination();
   }
 
   Future<String?> _reverseGeocode(LatLng latLng) async {
@@ -7853,10 +8052,6 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
       // Start the countdown
       _startScheduledCountdown();
 
-      // Calculate route from pickup to destination if both are set
-      if (_pickupLatLng != null && destinationLatLng != null) {
-        _calculateRouteFromPickupToDestination();
-      }
     } catch (e) {
       print('Error creating scheduled booking: $e');
       ScaffoldMessenger.of(context).showSnackBar(
@@ -8023,13 +8218,6 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
       );
     }
 
-    // Keep the pickup-to-destination route visible
-    // Only calculate if we don't already have a route from pickup to destination
-    if (_pickupLatLng != null &&
-        _destinationLatLng != null &&
-        _routePoints.isEmpty) {
-      await _calculateRouteFromPickupToDestination();
-    }
   }
 
   // Show rating dialog for driver
@@ -8202,7 +8390,6 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
           _routePoints = geometry.map<LatLng>((coord) {
             return LatLng(coord[1] as double, coord[0] as double);
           }).toList();
-          _showRoute = true;
         });
       } else {
         // Fallback: straight line
@@ -8210,9 +8397,6 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
           LatLng(startLat, startLng),
           LatLng(endLat, endLng),
         ];
-        setState(() {
-          _showRoute = true;
-        });
       }
     } catch (e) {
       print('Error calculating route: $e');
@@ -8221,9 +8405,6 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
         LatLng(driver.latitude, driver.longitude),
         LatLng(_pickupLatLng!.latitude, _pickupLatLng!.longitude),
       ];
-      setState(() {
-        _showRoute = true;
-      });
     }
   }
 
@@ -8280,7 +8461,6 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
           _routePoints = geometry.map<LatLng>((coord) {
             return LatLng(coord[1] as double, coord[0] as double);
           }).toList();
-          _showRoute = true;
         });
 
         // Update map camera to show both pickup and destination
@@ -8297,7 +8477,6 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
             LatLng(startLat, startLng),
             LatLng(endLat, endLng),
           ];
-          _showRoute = true;
         });
       }
     } catch (e) {
@@ -8308,7 +8487,6 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
           LatLng(_pickupLatLng!.latitude, _pickupLatLng!.longitude),
           LatLng(_destinationLatLng!.latitude, _destinationLatLng!.longitude),
         ];
-        _showRoute = true;
       });
     }
   }
@@ -9112,6 +9290,21 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
       }
     });
   }
+
+  // Filter drivers based on search criteria
+  List<DriverLocation> _getFilteredDrivers() {
+    return _onlineDrivers.where((driver) {
+      // Filter by search query (name)
+      final matchesName = _searchQuery.isEmpty || 
+          driver.name.toLowerCase().contains(_searchQuery.toLowerCase());
+      
+      // Filter by minimum rating
+      final matchesRating = _minRatingFilter == null || 
+          (driver.rating != null && driver.rating! >= _minRatingFilter!);
+      
+      return matchesName && matchesRating && driver.isOnline;
+    }).toList();
+  }
 }
 
 // Ride history model
@@ -9204,6 +9397,8 @@ class DriverLocation {
   final double longitude;
   final String? imageUrl;
   final bool isOnline;
+  final double? rating;
+  final int? ratingCount;
 
   DriverLocation({
     required this.id,
@@ -9213,5 +9408,7 @@ class DriverLocation {
     required this.longitude,
     this.imageUrl,
     this.isOnline = true,
+    this.rating,
+    this.ratingCount,
   });
 }

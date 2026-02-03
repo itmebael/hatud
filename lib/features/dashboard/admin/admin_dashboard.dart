@@ -16,6 +16,11 @@ import 'package:hatud_tricycle_app/repo/pref_manager.dart';
 import 'package:hatud_tricycle_app/supabase_client.dart';
 import 'package:latlong2/latlong.dart' as latlong;
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:csv/csv.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:intl/intl.dart';
+import 'dart:io';
 
 class AdminDashboard extends StatefulWidget {
   static const String routeName = "admin_dashboard";
@@ -40,6 +45,18 @@ class _AdminDashboardState extends State<AdminDashboard> {
   List<Map<String, dynamic>> _pendingDriverVerifications =
       []; // Pending driver verifications for BPLO
   bool _loading = true;
+
+  // Report generation state
+  List<Map<String, dynamic>> _reportData = [];
+  bool _loadingReport = false;
+  String _selectedReportType = 'bookings';
+  DateTime _reportStartDate = DateTime.now().subtract(Duration(days: 30));
+  DateTime _reportEndDate = DateTime.now();
+  String _selectedDriverFilter = 'all';
+  String _selectedPassengerFilter = 'all';
+  String _selectedStatusFilter = 'all';
+  List<Map<String, dynamic>> _availableDrivers = [];
+  List<Map<String, dynamic>> _availablePassengers = [];
   GoogleMapController? _monitoringMapController;
   AdminSection _selectedSection = AdminSection.overview;
 
@@ -97,6 +114,11 @@ class _AdminDashboardState extends State<AdminDashboard> {
       section: AdminSection.lto,
       icon: Icons.verified_user_outlined,
       label: 'BPLO Verification',
+    ),
+    _AdminNavItem(
+      section: AdminSection.reports,
+      icon: Icons.summarize_outlined,
+      label: 'Reports',
     ),
   ];
 
@@ -1658,6 +1680,601 @@ class _AdminDashboardState extends State<AdminDashboard> {
     }
   }
 
+  // Report generation methods
+  Future<void> _generateReport() async {
+    setState(() {
+      _loadingReport = true;
+    });
+
+    try {
+      final client = AppSupabase.client;
+      
+      // Base query for bookings - use direct column access instead of relationships
+      var query = client
+          .from('bookings')
+          .select('*')
+          .gte('created_at', _reportStartDate.toIso8601String())
+          .lte('created_at', _reportEndDate.toIso8601String());
+
+      // Apply filters
+      if (_selectedStatusFilter != 'all') {
+        query = query.eq('status', _selectedStatusFilter);
+      }
+      if (_selectedDriverFilter != 'all') {
+        query = query.eq('driver_id', _selectedDriverFilter);
+      }
+      if (_selectedPassengerFilter != 'all') {
+        query = query.eq('passenger_id', _selectedPassengerFilter);
+      }
+
+      final response = await query;
+      
+      setState(() {
+        _reportData = List<Map<String, dynamic>>.from(response);
+        _loadingReport = false;
+      });
+    } catch (e) {
+      print('Error generating report: $e');
+      setState(() {
+        _loadingReport = false;
+      });
+    }
+  }
+
+  Future<void> _loadAvailableDriversAndPassengers() async {
+    try {
+      final client = AppSupabase.client;
+      
+      // Load available drivers
+      final driversResponse = await client
+          .from('users')
+          .select('id, name, phone')
+          .eq('role', 'driver')
+          .order('name');
+      
+      // Load available passengers
+      final passengersResponse = await client
+          .from('users')
+          .select('id, name, phone')
+          .eq('role', 'passenger')
+          .order('name');
+
+      setState(() {
+        _availableDrivers = List<Map<String, dynamic>>.from(driversResponse);
+        _availablePassengers = List<Map<String, dynamic>>.from(passengersResponse);
+      });
+    } catch (e) {
+      print('Error loading drivers/passengers: $e');
+    }
+  }
+
+  Future<void> _exportToExcel() async {
+    if (_reportData.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No data to export'))
+      );
+      return;
+    }
+
+    try {
+      // Convert report data to CSV format
+      final csvData = _convertToCsv(_reportData);
+      
+      // Create file content
+      final dateFormat = DateFormat('yyyyMMdd_HHmmss');
+      final fileName = 'report_${dateFormat.format(DateTime.now())}.csv';
+      
+      // Save file
+      final result = await FilePicker.platform.saveFile(
+        dialogTitle: 'Save Report',
+        fileName: fileName,
+        lockParentWindow: true,
+      );
+
+      if (result != null) {
+        final file = File(result);
+        await file.writeAsString(csvData);
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Report exported successfully'))
+        );
+      }
+    } catch (e) {
+      print('Error exporting to Excel: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error exporting report: $e'))
+      );
+    }
+  }
+
+  String _convertToCsv(List<Map<String, dynamic>> data) {
+    if (data.isEmpty) return '';
+    
+    // Get all unique keys from the data
+    final allKeys = data.expand((item) => item.keys).toSet().toList();
+    
+    // Create CSV rows
+    final csvRows = <List>[];
+    
+    // Add header row
+    csvRows.add(allKeys);
+    
+    // Add data rows
+    for (final item in data) {
+      final row = allKeys.map((key) {
+        final value = item[key];
+        if (value == null) return '';
+        if (value is Map) return '[Object]';
+        if (value is List) return '[Array]';
+        return value.toString();
+      }).toList();
+      csvRows.add(row);
+    }
+    
+    // Convert to CSV string
+    return const ListToCsvConverter().convert(csvRows);
+  }
+
+  Widget _buildReportsDashboard() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Report Header
+          Text(
+            'Report Generator',
+            style: TextStyle(
+              fontSize: 28,
+              fontWeight: FontWeight.bold,
+              color: Colors.black87,
+            ),
+          ),
+          SizedBox(height: 16),
+          Text(
+            'Generate comprehensive reports with filters and export to Excel format',
+            style: TextStyle(
+              fontSize: 16,
+              color: Colors.black54,
+            ),
+          ),
+          SizedBox(height: 32),
+
+          // Filter Section
+          _buildReportFilters(),
+          SizedBox(height: 24),
+
+          // Generate Report Button
+          ElevatedButton(
+            onPressed: _loadingReport ? null : _generateReport,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: kPrimaryColor,
+              padding: EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+            child: _loadingReport
+                ? SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      valueColor: AlwaysStoppedAnimation(Colors.white),
+                    ),
+                  )
+                : Text(
+                    'Generate Report',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                  ),
+          ),
+          SizedBox(height: 32),
+
+          // Report Preview
+          if (_reportData.isNotEmpty) _buildReportPreview(),
+          if (_reportData.isEmpty && !_loadingReport)
+            Container(
+              padding: EdgeInsets.all(40),
+              child: Column(
+                children: [
+                  Icon(
+                    Icons.summarize_outlined,
+                    size: 64,
+                    color: Colors.grey[300],
+                  ),
+                  SizedBox(height: 16),
+                  Text(
+                    'No report data yet. Generate a report to see preview.',
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: Colors.grey[500],
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildReportFilters() {
+    return Container(
+      padding: EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Report Filters',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              color: Colors.black87,
+            ),
+          ),
+          SizedBox(height: 20),
+
+          // Date Range
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Start Date', style: TextStyle(fontWeight: FontWeight.bold)),
+                    SizedBox(height: 8),
+                    InkWell(
+                      onTap: () async {
+                        final selectedDate = await showDatePicker(
+                          context: context,
+                          initialDate: _reportStartDate,
+                          firstDate: DateTime(2020),
+                          lastDate: DateTime.now(),
+                        );
+                        if (selectedDate != null) {
+                          setState(() {
+                            _reportStartDate = selectedDate;
+                          });
+                        }
+                      },
+                      child: Container(
+                        padding: EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          border: Border.all(color: Colors.grey[300]!),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.calendar_today, size: 20, color: Colors.grey[600]),
+                            SizedBox(width: 8),
+                            Text(DateFormat('MMM dd, yyyy').format(_reportStartDate)),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('End Date', style: TextStyle(fontWeight: FontWeight.bold)),
+                    SizedBox(height: 8),
+                    InkWell(
+                      onTap: () async {
+                        final selectedDate = await showDatePicker(
+                          context: context,
+                          initialDate: _reportEndDate,
+                          firstDate: DateTime(2020),
+                          lastDate: DateTime.now(),
+                        );
+                        if (selectedDate != null) {
+                          setState(() {
+                            _reportEndDate = selectedDate;
+                          });
+                        }
+                      },
+                      child: Container(
+                        padding: EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          border: Border.all(color: Colors.grey[300]!),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.calendar_today, size: 20, color: Colors.grey[600]),
+                            SizedBox(width: 8),
+                            Text(DateFormat('MMM dd, yyyy').format(_reportEndDate)),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: 20),
+
+          // Status Filter
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Status Filter', style: TextStyle(fontWeight: FontWeight.bold)),
+              SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                value: _selectedStatusFilter,
+                items: [
+                  DropdownMenuItem(value: 'all', child: Text('All Statuses')),
+                  DropdownMenuItem(value: 'pending', child: Text('Pending')),
+                  DropdownMenuItem(value: 'accepted', child: Text('Accepted')),
+                  DropdownMenuItem(value: 'in_progress', child: Text('In Progress')),
+                  DropdownMenuItem(value: 'completed', child: Text('Completed')),
+                  DropdownMenuItem(value: 'cancelled', child: Text('Cancelled')),
+                ],
+                onChanged: (value) {
+                  setState(() {
+                    _selectedStatusFilter = value!;
+                  });
+                },
+                decoration: InputDecoration(
+                  border: OutlineInputBorder(),
+                  contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: 20),
+
+          // Driver Filter
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Driver Filter', style: TextStyle(fontWeight: FontWeight.bold)),
+              SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                value: _selectedDriverFilter,
+                items: [
+                  DropdownMenuItem(value: 'all', child: Text('All Drivers')),
+                  ..._availableDrivers.map((driver) {
+                    return DropdownMenuItem(
+                      value: driver['id'].toString(),
+                      child: Text('${driver['name']} (${driver['phone']})'),
+                    );
+                  }).toList(),
+                ],
+                onChanged: (value) {
+                  setState(() {
+                    _selectedDriverFilter = value!;
+                  });
+                },
+                decoration: InputDecoration(
+                  border: OutlineInputBorder(),
+                  contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: 20),
+
+          // Passenger Filter
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Passenger Filter', style: TextStyle(fontWeight: FontWeight.bold)),
+              SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                value: _selectedPassengerFilter,
+                items: [
+                  DropdownMenuItem(value: 'all', child: Text('All Passengers')),
+                  ..._availablePassengers.map((passenger) {
+                    return DropdownMenuItem(
+                      value: passenger['id'].toString(),
+                      child: Text('${passenger['name']} (${passenger['phone']})'),
+                    );
+                  }).toList(),
+                ],
+                onChanged: (value) {
+                  setState(() {
+                    _selectedPassengerFilter = value!;
+                  });
+                },
+                decoration: InputDecoration(
+                  border: OutlineInputBorder(),
+                  contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildReportPreview() {
+    return Container(
+      padding: EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Report Preview (${_reportData.length} records)',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.black87,
+                ),
+              ),
+              ElevatedButton(
+                onPressed: _exportToExcel,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green,
+                  padding: EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.download, size: 20, color: Colors.white),
+                    SizedBox(width: 8),
+                    Text('Export to Excel', style: TextStyle(color: Colors.white)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: 16),
+
+          // Data Table
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: DataTable(
+              columns: [
+                DataColumn(label: Text('ID')),
+                DataColumn(label: Text('Passenger')),
+                DataColumn(label: Text('Driver')),
+                DataColumn(label: Text('Status')),
+                DataColumn(label: Text('Pickup Location')),
+                DataColumn(label: Text('Destination')),
+                DataColumn(label: Text('Fare')),
+                DataColumn(label: Text('Created')),
+              ],
+              rows: _reportData.take(10).map((booking) {
+                // Use direct column access since relationships don't exist
+                final passengerName = booking['passenger_name']?.toString() ?? 'Unknown';
+                final driverName = booking['driver_name']?.toString() ?? 'Unknown';
+                
+                return DataRow(
+                  cells: [
+                    DataCell(Text(booking['id']?.toString() ?? 'N/A')),
+                    DataCell(Text(passengerName)),
+                    DataCell(Text(driverName)),
+                    DataCell(
+                      Container(
+                        padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: _getStatusColor(booking['status']?.toString()),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          booking['status']?.toString()?.toUpperCase() ?? 'UNKNOWN',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ),
+                    DataCell(Text(_formatPickupLocation(booking))),
+                    DataCell(Text(_formatDestination(booking) ?? 'N/A')),
+                    DataCell(Text('${booking['estimated_fare']?.toStringAsFixed(2) ?? '0.00'}')),
+                    DataCell(Text(_formatTimeAgo(booking['created_at']?.toString()))),
+                  ],
+                );
+              }).toList(),
+            ),
+          ),
+
+          if (_reportData.length > 10)
+            Padding(
+              padding: EdgeInsets.only(top: 16),
+              child: Text(
+                'Showing 10 of ${_reportData.length} records. Export to see all data.',
+                style: TextStyle(color: Colors.grey[600]),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  String _formatPickupLocation(Map<String, dynamic> booking) {
+    // Check if we have latitude/longitude coordinates
+    final pickupLat = booking['pickup_latitude'] as num?;
+    final pickupLng = booking['pickup_longitude'] as num?;
+    
+    if (pickupLat != null && pickupLng != null) {
+      return '${pickupLat.toStringAsFixed(4)}, ${pickupLng.toStringAsFixed(4)}';
+    }
+    
+    // Fallback to any location text if available
+    final pickupLocation = booking['pickup_location']?.toString();
+    if (pickupLocation != null && pickupLocation.isNotEmpty) {
+      return pickupLocation;
+    }
+    
+    return 'N/A';
+  }
+
+  String? _formatDestination(Map<String, dynamic> booking) {
+    // Check various possible destination column names
+    final destination = booking['destination']?.toString();
+    if (destination != null && destination.isNotEmpty) {
+      return destination;
+    }
+    
+    final dropoffLocation = booking['dropoff_location']?.toString();
+    if (dropoffLocation != null && dropoffLocation.isNotEmpty) {
+      return dropoffLocation;
+    }
+    
+    final destinationLat = booking['destination_latitude'] as num?;
+    final destinationLng = booking['destination_longitude'] as num?;
+    if (destinationLat != null && destinationLng != null) {
+      return '${destinationLat.toStringAsFixed(4)}, ${destinationLng.toStringAsFixed(4)}';
+    }
+    
+    return null;
+  }
+
+  Color _getStatusColor(String? status) {
+    switch (status?.toLowerCase()) {
+      case 'pending':
+        return Colors.orange;
+      case 'accepted':
+        return Colors.blue;
+      case 'in_progress':
+        return Colors.green;
+      case 'completed':
+        return Colors.green[700]!;
+      case 'cancelled':
+        return Colors.red;
+      default:
+        return Colors.grey;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -1978,6 +2595,14 @@ class _AdminDashboardState extends State<AdminDashboard> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _buildBPLODashboard(),
+          ],
+        );
+      case AdminSection.reports:
+        return Column(
+          key: const ValueKey('reports'),
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildReportsDashboard(),
           ],
         );
     }
@@ -3504,7 +4129,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
       await AppSupabase.initialize();
       final client = AppSupabase.client;
       final pref = await PrefManager.getInstance();
-      final currentUserId = pref.userEmail; // or get from auth
 
       // Get current user ID from auth
       final session = client.auth.currentSession;
@@ -4111,6 +4735,7 @@ enum AdminSection {
   harassment,
   notifications,
   lto,
+  reports,
 }
 
 class _AdminNavItem {
