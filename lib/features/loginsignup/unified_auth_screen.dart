@@ -93,6 +93,7 @@ class _UnifiedAuthState extends State<UnifiedAuth>
   bool _obscurePassword = true;
   bool _obscureConfirmPassword = true;
   bool _faceIdRegistered = false; // Track if face ID registration is completed
+  String? _tempFaceAuthId; // Store the ID used for face registration
 
   // Form keys
   final _loginKey = GlobalKey<FormState>();
@@ -329,116 +330,120 @@ class _UnifiedAuthState extends State<UnifiedAuth>
             opacity: 0.09,
           ),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: showIllustration && showSidePanel
-              ? MainAxisSize.max
-              : MainAxisSize.min,
+        child: Stack(
           children: [
-            TweenAnimationBuilder<double>(
-              tween: Tween(begin: 0.92, end: 1),
-              duration: const Duration(milliseconds: 360),
-              curve: Curves.easeOutBack,
-              builder: (context, value, child) =>
-                  Transform.scale(scale: value, child: child),
-              child: Container(
-                width: compact ? 70 : 88,
-                height: compact ? 70 : 88,
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.2),
-                  borderRadius: BorderRadius.circular(22),
-                  border: Border.all(color: Colors.white.withValues(alpha: 0.3)),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.1),
-                      blurRadius: 16,
-                      offset: const Offset(0, 8),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: showIllustration && showSidePanel
+                  ? MainAxisSize.max
+                  : MainAxisSize.min,
+              children: [
+                TweenAnimationBuilder<double>(
+                  tween: Tween(begin: 0.92, end: 1),
+                  duration: const Duration(milliseconds: 360),
+                  curve: Curves.easeOutBack,
+                  builder: (context, value, child) =>
+                      Transform.scale(scale: value, child: child),
+                  child: Container(
+                    width: compact ? 70 : 88,
+                    height: compact ? 70 : 88,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(22),
+                      border: Border.all(color: Colors.white.withValues(alpha: 0.3)),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.1),
+                          blurRadius: 16,
+                          offset: const Offset(0, 8),
+                        ),
+                      ],
                     ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Image.asset(
+                        'assets/logo_small.png',
+                        fit: BoxFit.contain,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Text(
+                  _isLogin 
+                      ? AppLocalizations.of(context)!.welcomeBack 
+                      : AppLocalizations.of(context)!.createYourAccount,
+                  style: theme.textTheme.headlineMedium?.copyWith(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -0.4,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  _isLogin
+                      ? AppLocalizations.of(context)!.accessYourRides
+                      : AppLocalizations.of(context)!.joinOurCommunity,
+                  style: theme.textTheme.bodyLarge?.copyWith(
+                    color: Colors.white.withValues(alpha: 0.8),
+                    height: 1.6,
+                  ),
+                ),
+                const SizedBox(height: 18),
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 12,
+                  children: [
+                    _buildHeroBadge(context, Icons.bolt_rounded, AppLocalizations.of(context)!.quickBooking),
+                    _buildHeroBadge(
+                        context, Icons.shield_rounded, AppLocalizations.of(context)!.securePayments),
+                    if (showIllustration)
+                      _buildHeroBadge(
+                          context, Icons.timeline_rounded, AppLocalizations.of(context)!.liveRideTracking),
                   ],
                 ),
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Image.asset(
-                    'assets/logo_small.png',
-                    fit: BoxFit.contain,
+                if (showIllustration && !showSidePanel) ...[
+                  const SizedBox(height: 20),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: SizedBox(
+                      height: 180,
+                      child: TweenAnimationBuilder<double>(
+                        tween: Tween(begin: 0.9, end: 1),
+                        duration: const Duration(milliseconds: 520),
+                        curve: Curves.easeOutCubic,
+                        builder: (context, value, child) =>
+                            Transform.scale(scale: value, child: child),
+                        child: Image.asset(
+                          'assets/onboarding_1.png',
+                          fit: BoxFit.contain,
+                        ),
+                      ),
+                    ),
                   ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 20),
-            Text(
-              _isLogin 
-                  ? AppLocalizations.of(context)!.welcomeBack 
-                  : AppLocalizations.of(context)!.createYourAccount,
-              style: theme.textTheme.headlineMedium?.copyWith(
-                color: Colors.white,
-                fontWeight: FontWeight.w700,
-                letterSpacing: -0.4,
-              ),
-            ),
-            const SizedBox(height: 10),
-            Text(
-              _isLogin
-                  ? AppLocalizations.of(context)!.accessYourRides
-                  : AppLocalizations.of(context)!.joinOurCommunity,
-              style: theme.textTheme.bodyLarge?.copyWith(
-                color: Colors.white.withValues(alpha: 0.8),
-                height: 1.6,
-              ),
-            ),
-            const SizedBox(height: 18),
-            Wrap(
-              spacing: 12,
-              runSpacing: 12,
-              children: [
-                _buildHeroBadge(context, Icons.bolt_rounded, AppLocalizations.of(context)!.quickBooking),
-                _buildHeroBadge(
-                    context, Icons.shield_rounded, AppLocalizations.of(context)!.securePayments),
-                if (showIllustration)
-                  _buildHeroBadge(
-                      context, Icons.timeline_rounded, AppLocalizations.of(context)!.liveRideTracking),
+                ],
+                // Reserve space for the image in side panel mode
+                if (showIllustration && showSidePanel)
+                   const SizedBox(height: 200), 
               ],
             ),
-            if (showIllustration) ...[
-              SizedBox(height: showSidePanel ? 26 : 20),
-              if (showSidePanel)
-                Expanded(
-                  child: Align(
-                    alignment: compact
-                        ? Alignment.bottomCenter
-                        : Alignment.bottomRight,
-                    child: TweenAnimationBuilder<double>(
-                      tween: Tween(begin: 0.88, end: 1),
-                      duration: const Duration(milliseconds: 520),
-                      curve: Curves.easeOutCubic,
-                      builder: (context, value, child) =>
-                          Transform.scale(scale: value, child: child),
-                      child: Image.asset(
-                        'assets/onboarding_1.png',
-                        fit: BoxFit.contain,
-                      ),
-                    ),
-                  ),
-                )
-              else
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: SizedBox(
-                    height: 180,
-                    child: TweenAnimationBuilder<double>(
-                      tween: Tween(begin: 0.9, end: 1),
-                      duration: const Duration(milliseconds: 520),
-                      curve: Curves.easeOutCubic,
-                      builder: (context, value, child) =>
-                          Transform.scale(scale: value, child: child),
-                      child: Image.asset(
-                        'assets/onboarding_1.png',
-                        fit: BoxFit.contain,
-                      ),
-                    ),
+            if (showIllustration && showSidePanel)
+              Positioned(
+                bottom: 0,
+                right: 0,
+                child: TweenAnimationBuilder<double>(
+                  tween: Tween(begin: 0.88, end: 1),
+                  duration: const Duration(milliseconds: 520),
+                  curve: Curves.easeOutCubic,
+                  builder: (context, value, child) =>
+                      Transform.scale(scale: value, child: child),
+                  child: Image.asset(
+                    'assets/onboarding_1.png',
+                    fit: BoxFit.contain,
+                    height: 240,
                   ),
                 ),
-            ],
+              ),
           ],
         ),
       ),
@@ -1423,6 +1428,7 @@ class _UnifiedAuthState extends State<UnifiedAuth>
                       onPressed: () async {
                         // Generate temporary user ID for face registration
                         final tempUserId = const Uuid().v4();
+                        _tempFaceAuthId = tempUserId; // Save the ID for account creation
                         final displayNameForFace = _nameCntrl.text.trim();
                         
                         final faceRegistrationCompleted = await Navigator.of(context).pushNamed<bool>(
@@ -1881,7 +1887,8 @@ class _UnifiedAuthState extends State<UnifiedAuth>
 
       final client = AppSupabase.client;
 
-      final userId = const Uuid().v4();
+      // Use the ID from face registration if available, otherwise generate new one
+      final userId = _tempFaceAuthId ?? const Uuid().v4();
       final roleValue = (() {
         final r = (selectedRole ?? 'client').toLowerCase();
         // Map display roles to database roles
@@ -1953,23 +1960,67 @@ class _UnifiedAuthState extends State<UnifiedAuth>
       // Passenger ID image (required for Passenger)
       final selectedRoleLower = (selectedRole ?? '').toLowerCase();
       final isPassenger = selectedRoleLower == 'passenger';
-      if (isPassenger &&
-          _passengerIdImagePath != null &&
-          _passengerIdImagePath!.isNotEmpty) {
+      if (isPassenger) {
+        // Validate that passenger ID image is provided
+        if (_passengerIdImagePath == null || _passengerIdImagePath!.isEmpty) {
+          if (!mounted) return;
+          setState(() => _isLoading = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Passenger ID photo is required. Please capture your ID photo before registering.'),
+              backgroundColor: kDanger,
+              duration: Duration(seconds: 4),
+            ),
+          );
+          return;
+        }
+
+        // Upload passenger ID image - this is REQUIRED for passengers
         try {
           final email = _emailCntrl.text.trim();
           final fileName =
               'passenger_id_${email.replaceAll('@', '_').replaceAll('.', '_')}_${DateTime.now().millisecondsSinceEpoch}.jpg';
           final file = File(_passengerIdImagePath!);
+          
+          // Check if file exists
+          if (!file.existsSync()) {
+            if (!mounted) return;
+            setState(() => _isLoading = false);
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Passenger ID image file not found. Please capture your ID photo again.'),
+                backgroundColor: kDanger,
+                duration: Duration(seconds: 4),
+              ),
+            );
+            return;
+          }
+
           await client.storage.from('avatars').upload(fileName, file);
           passengerIdImageUrl =
               client.storage.from('avatars').getPublicUrl(fileName);
-        } catch (_) {
-          passengerIdImageUrl = null;
+          
+          // Verify upload was successful - getPublicUrl always returns a string
+          if (passengerIdImageUrl.isEmpty) {
+            throw Exception('Failed to get image URL after upload');
+          }
+        } catch (uploadError) {
+          print('Failed to upload passenger ID image: $uploadError');
+          if (!mounted) return;
+          setState(() => _isLoading = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to upload passenger ID image: $uploadError. Please try again.'),
+              backgroundColor: kDanger,
+              duration: const Duration(seconds: 4),
+            ),
+          );
+          return;
         }
       }
 
-      await client.from('users').insert({
+      // Prepare user data for insertion
+      final userData = <String, dynamic>{
         'id': userId,
         'email': _emailCntrl.text.trim(),
         'full_name': _nameCntrl.text.trim(),
@@ -1981,7 +2032,6 @@ class _UnifiedAuthState extends State<UnifiedAuth>
         'id_number': _idNumberCntrl.text.trim().isEmpty
             ? null
             : _idNumberCntrl.text.trim(),
-        'id_image': passengerIdImageUrl,
         'driver_license_number': _driverLicenseNumberCntrl.text.trim().isEmpty
             ? null
             : _driverLicenseNumberCntrl.text.trim(),
@@ -1991,7 +2041,31 @@ class _UnifiedAuthState extends State<UnifiedAuth>
                 ? null
                 : _tricyclePlateNumberCntrl.text.trim(),
         'tricycle_plate_image': tricyclePlateImageUrl,
-      });
+      };
+
+      // For passengers, id_image is REQUIRED (not null)
+      if (isPassenger) {
+        // passengerIdImageUrl should already be validated and set above
+        // But add a final check to be safe
+        if (passengerIdImageUrl == null || passengerIdImageUrl.isEmpty) {
+          if (!mounted) return;
+          setState(() => _isLoading = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Passenger ID image upload failed. Please try again.'),
+              backgroundColor: kDanger,
+              duration: Duration(seconds: 4),
+            ),
+          );
+          return;
+        }
+        userData['id_image'] = passengerIdImageUrl;
+      } else {
+        // For non-passengers, id_image can be null
+        userData['id_image'] = null;
+      }
+
+      await client.from('users').insert(userData);
 
       if (!mounted) return;
       setState(() {
@@ -2040,6 +2114,8 @@ class _UnifiedAuthState extends State<UnifiedAuth>
         _driverLicenseImagePath = null;
         _tricyclePlateImagePath = null;
         _passengerIdImagePath = null;
+        _faceIdRegistered = false;
+        _tempFaceAuthId = null;
       });
     } catch (e) {
       if (!mounted) return;

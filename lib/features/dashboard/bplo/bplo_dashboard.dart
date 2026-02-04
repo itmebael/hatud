@@ -1156,14 +1156,14 @@ class _BPLODashboardState extends State<BPLODashboard> {
         final spacing = ResponsiveHelper.gridSpacing(context) * 2.5;
         final cardWidth = (constraints.maxWidth - (crossAxisCount - 1) * spacing) / crossAxisCount;
         
-        // Responsive card height estimation
+        // Responsive card height estimation - use more flexible approach
         double estimatedHeight;
         if (isMobile) {
-          estimatedHeight = ResponsiveHelper.isPortrait(context) ? 680.0 : 580.0;
+          estimatedHeight = ResponsiveHelper.isPortrait(context) ? 720.0 : 620.0;
         } else if (isTablet) {
-          estimatedHeight = ResponsiveHelper.isPortrait(context) ? 620.0 : 540.0;
+          estimatedHeight = ResponsiveHelper.isPortrait(context) ? 660.0 : 580.0;
         } else {
-          estimatedHeight = 580.0;
+          estimatedHeight = 620.0;
         }
         
         return GridView.builder(
@@ -1217,10 +1217,11 @@ class _BPLODashboardState extends State<BPLODashboard> {
           ),
         ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
+      child: IntrinsicHeight(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
           // Header with profile image
           Container(
             padding: ResponsiveHelper.responsivePadding(context),
@@ -1360,8 +1361,8 @@ class _BPLODashboardState extends State<BPLODashboard> {
           ),
 
           // Content with documents
-          Flexible(
-            child: Padding(
+          Expanded(
+            child: SingleChildScrollView(
               padding: ResponsiveHelper.responsivePadding(context),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -1581,6 +1582,7 @@ class _BPLODashboardState extends State<BPLODashboard> {
           ),
         ],
       ),
+    ),
     );
   }
 
@@ -3762,4 +3764,3 @@ class _BPLODashboardState extends State<BPLODashboard> {
     }
   }
 }
-

@@ -13,6 +13,7 @@ import '../../dashboard/passenger/passenger_dashboard.dart';
 import '../../dashboard/driver/driver_dashboard.dart';
 import '../../dashboard/admin/admin_dashboard.dart';
 import '../../../../common/my_colors.dart';
+import '../../../supabase_client.dart';
 
 class FaceRecognitionLoginScreen extends StatefulWidget {
   static const String routeName = "face_recognition_login";
@@ -43,6 +44,9 @@ class _FaceRecognitionLoginScreenState
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     
+    // Ensure Supabase is initialized before any Supabase.instance calls
+    AppSupabase.initialize();
+
     // Check if platform supports camera
     if (kIsWeb || Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
       setState(() {
@@ -214,14 +218,32 @@ class _FaceRecognitionLoginScreenState
         return;
       }
 
-      // Upload image to Supabase storage
+      // Ensure Supabase is initialized
+      await AppSupabase.initialize();
+      
+      // Upload image to Supabase storage (robust handling)
       final client = Supabase.instance.client;
       final fileName = "login_${DateTime.now().millisecondsSinceEpoch}.jpg";
-      
-      await client.storage.from('faces').upload(fileName, file);
-      final imageUrl = client.storage.from('faces').getPublicUrl(fileName);
+      String? imageUrl;
+      print('Face login upload: auth user: ${client.auth.currentUser?.id ?? 'anon'}, file: $fileName');
+
+      try {
+        await client.storage.from('faces').upload(fileName, file);
+        imageUrl = client.storage.from('faces').getPublicUrl(fileName);
+      } catch (e, st) {
+        print('Upload error: $e\n$st');
+        final msg = e.toString().toLowerCase();
+        if (msg.contains('row-level security') || msg.contains('unauthorized') || msg.contains('403')) {
+          _showError('Upload blocked by storage policy (403). Please allow uploads for login images (name LIKE "login_%") or use a server-side upload.');
+        } else {
+          _showError('Failed to upload image: $e');
+        }
+        _startFaceDetection();
+        return;
+      }
 
       // Try to match face using Supabase RPC function
+      bool faceMatched = false;
       try {
         final response = await client.rpc(
           'match_face_for_login',
@@ -234,8 +256,15 @@ class _FaceRecognitionLoginScreenState
           final userName = matchData['name'] as String?;
 
           if (userId != null) {
+            faceMatched = true;
+            // Attempt to remove uploaded login file
+            try {
+              await client.storage.from('faces').remove([fileName]);
+            } catch (e) {
+              print('Failed to remove login file: $e');
+            }
             await _authenticateUser(userId, userName);
-            // Cleanup
+            // Cleanup local file
             try {
               await File(imagePath).delete();
             } catch (_) {}
@@ -244,64 +273,80 @@ class _FaceRecognitionLoginScreenState
         }
       } catch (e) {
         print("RPC function error: $e");
-        // Fallback: Try alternative matching method
+        // Continue to check database directly
       }
 
-      // Fallback: Check if user has registered face and use simple verification
-      // This is a temporary solution - in production, use proper face matching
-      final registeredFaces = await client
-          .from('face_embeddings')
-          .select('user_id, name')
-          .not('embedding', 'is', null)
-          .limit(1);
+      // If RPC didn't match, check if any face records exist in database
+      if (!faceMatched) {
+        try {
+          // PRODUCTION MODE: Check if any face embeddings exist in database
+          // This is a fallback when the RPC function doesn't return a match
+          final registeredFaces = await client
+              .from('face_embeddings')
+              .select('id, user_id, name, embedding')
+              .not('embedding', 'is', null)
+              .order('created_at', ascending: false);
 
-      if (registeredFaces.isNotEmpty) {
-        final faceData = registeredFaces[0];
-        final userId = faceData['user_id'] as String?;
-        final userName = faceData['name'] as String?;
-        
-        // For demo: authenticate first registered user
-        // In production, this should use actual face matching
-        if (userId != null) {
-          // Show confirmation dialog
-          final confirmed = await showDialog<bool>(
-            context: context,
-            builder: (context) => AlertDialog(
-              title: const Text('Face Recognized'),
-              content: Text('Login as $userName?'),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context, false),
-                  child: const Text('Cancel'),
-                ),
-                TextButton(
-                  onPressed: () => Navigator.pop(context, true),
-                  child: const Text('Login'),
-                ),
-              ],
-            ),
-          );
-
-          if (confirmed == true && mounted) {
-            await _authenticateUser(userId, userName);
-            // Cleanup
-            try {
-              await File(imagePath).delete();
-            } catch (_) {}
-            return;
+          if (registeredFaces.isNotEmpty) {
+            // Records exist but no match found - this is expected behavior
+            // The face didn't match any registered embeddings
+            print("PRODUCTION: No matching face found among ${registeredFaces.length} registered faces");
+            _showNoRecordMessage();
+          } else {
+            // No records in database at all
+            print("PRODUCTION: No face embeddings found in database");
+            _showNoRecordMessage();
           }
+          
+          // Cleanup uploaded files
+          try {
+            await client.storage.from('faces').remove([fileName]);
+          } catch (e) {
+            print('Failed to remove login file: $e');
+          }
+          
+          // Cleanup local file
+          try {
+            await File(imagePath).delete();
+          } catch (_) {}
+          
+          _startFaceDetection();
+          return;
+          
+        } catch (e) {
+          print("Database query error during fallback: $e");
+          _showNoRecordMessage();
+          
+          // Cleanup
+          try {
+            await File(imagePath).delete();
+          } catch (_) {}
+          
+          _startFaceDetection();
+          return;
         }
       }
-
-      _showError("Face not recognized. Please register your face first or use password login.");
       
-      // Cleanup
+      // Cleanup - attempt to remove uploaded login file and local file
+      try {
+        await client.storage.from('faces').remove([fileName]);
+      } catch (e) {
+        print('Failed to remove login file: $e');
+      }
       try {
         await File(imagePath).delete();
       } catch (_) {}
 
     } catch (e) {
-      _showError("Verification failed: $e");
+      // Check if error is related to no records found
+      final errorMsg = e.toString().toLowerCase();
+      if (errorMsg.contains('no record') || 
+          errorMsg.contains('not found') || 
+          errorMsg.contains('empty')) {
+        _showNoRecordMessage();
+      } else {
+        _showError("Verification failed: $e");
+      }
       _startFaceDetection();
     } finally {
       if (mounted) {
@@ -377,7 +422,22 @@ class _FaceRecognitionLoginScreenState
         SnackBar(
           content: Text("❌ $message"),
           backgroundColor: Colors.red,
-          duration: const Duration(seconds: 3),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    }
+  }
+
+  void _showNoRecordMessage() {
+    if (mounted) {
+      setState(() {
+        _statusMessage = "No record found";
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("❌ No record found. Your face is not registered in the database."),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 4),
         ),
       );
     }

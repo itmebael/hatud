@@ -2187,7 +2187,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: Text(
-                          booking['status']?.toString()?.toUpperCase() ?? 'UNKNOWN',
+                          booking['status']?.toString().toUpperCase() ?? 'UNKNOWN',
                           style: TextStyle(
                             color: Colors.white,
                             fontSize: 12,

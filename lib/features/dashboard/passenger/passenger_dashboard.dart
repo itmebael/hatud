@@ -9125,7 +9125,7 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
             .select('is_online')
             .eq('id', _userId!)
             .single();
-      } else if (email != null && email.isNotEmpty) {
+      } else if (email.isNotEmpty) {
         query = client
             .from('users')
             .select('is_online')
@@ -9184,7 +9184,7 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
           'latitude': isOnline ? _currentLocation.latitude : null,
           'longitude': isOnline ? _currentLocation.longitude : null,
         }).eq('id', _userId!);
-      } else if (email != null && email.isNotEmpty) {
+      } else if (email.isNotEmpty) {
         updateQuery = client.from('users').update({
           'is_online': isOnline,
           'last_location_update':
@@ -9274,7 +9274,7 @@ class _PassengerDashboardState extends State<PassengerDashboard> {
             'longitude': position.longitude,
             'last_location_update': DateTime.now().toIso8601String(),
           }).eq('id', _userId!);
-        } else if (email != null && email.isNotEmpty) {
+        } else if (email.isNotEmpty) {
           updateQuery = client.from('users').update({
             'latitude': position.latitude,
             'longitude': position.longitude,

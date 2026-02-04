@@ -96,6 +96,8 @@ class _DriverDashboardState extends State<DriverDashboard> {
   bool _sendingEmergency = false;
   String? _currentBookingId; // Track current active booking ID
   String? _currentBookingStatus; // Track current booking status
+  String? _currentBookingType;
+  String? _currentScheduledTime;
   Map<String, Timer?> _bookingTimers = {}; // Track timers for each booking
 
   // Booking and route data
@@ -226,6 +228,32 @@ class _DriverDashboardState extends State<DriverDashboard> {
     return fallback;
   }
 
+  String _formatCountdown(Duration duration) {
+    final totalSeconds = duration.inSeconds < 0 ? 0 : duration.inSeconds;
+    final hours = totalSeconds ~/ 3600;
+    final minutes = (totalSeconds % 3600) ~/ 60;
+    final seconds = totalSeconds % 60;
+    return '${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+  }
+
+  String _mapRideStatusToBookingStatus(String? rideStatus) {
+    final normalized = (rideStatus ?? '').toLowerCase();
+    switch (normalized) {
+      case 'waiting':
+      case 'pending':
+        return 'pending';
+      case 'assigned':
+      case 'accepted':
+        return 'accepted';
+      case 'driver_arrived':
+        return 'driver_arrived';
+      case 'in_progress':
+        return 'in_progress';
+      default:
+        return 'pending';
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -327,6 +355,8 @@ class _DriverDashboardState extends State<DriverDashboard> {
             _hasActiveRide = false;
             _currentRideStatus = "Online - Waiting for rides";
             _currentBookingId = null;
+            _currentBookingType = null;
+            _currentScheduledTime = null;
             _passengerName = "";
             _pickupLocation = "";
             _destination = "";
@@ -366,6 +396,8 @@ class _DriverDashboardState extends State<DriverDashboard> {
       _completedRides++;
       _todayEarnings += fareValue;
       _currentBookingId = null;
+      _currentBookingType = null;
+      _currentScheduledTime = null;
       _passengerName = "";
       _pickupLocation = "";
       _destination = "";
@@ -549,7 +581,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
         final bookingsResponse = await client
             .from('bookings')
             .select(
-                'id, passenger_name, pickup_latitude, pickup_longitude, destination_latitude, destination_longitude, status, driver_id')
+                'id, passenger_id, passenger_email, passenger_name, pickup_latitude, pickup_longitude, destination_latitude, destination_longitude, status, driver_id')
             .or('status.eq.pending,status.eq.accepted,status.eq.in_progress,status.eq.driver_arrived')
             .order('created_at', ascending: false)
             .limit(100);
@@ -601,6 +633,9 @@ class _DriverDashboardState extends State<DriverDashboard> {
                   'longitude': lng,
                   'status': booking['status']?.toString() ?? 'pending',
                   'driver_id': booking['driver_id']?.toString(),
+                  'passenger_id': booking['passenger_id']?.toString(),
+                  'passenger_email': booking['passenger_email']?.toString(),
+                  'is_booking': true,
                 };
               }
               return null;
@@ -608,19 +643,100 @@ class _DriverDashboardState extends State<DriverDashboard> {
             .whereType<Map<String, dynamic>>()
             .toList();
 
+        final existingPassengerIds = passengers
+            .map((p) => p['passenger_id']?.toString())
+            .whereType<String>()
+            .where((id) => id.isNotEmpty)
+            .toSet();
+        final existingPassengerEmails = passengers
+            .map((p) => p['passenger_email']?.toString())
+            .whereType<String>()
+            .where((email) => email.isNotEmpty)
+            .toSet();
+
+        final additionalPassengers = <Map<String, dynamic>>[];
+        try {
+          dynamic onlineResponse;
+          final baseQuery = client
+              .from('users')
+              .select(
+                  'id, email, full_name, latitude, longitude, ride_status, is_online')
+              .eq('role', 'customer')
+              .not('latitude', 'is', null)
+              .not('longitude', 'is', null)
+              .neq('ride_status', 'completed');
+          try {
+            onlineResponse =
+                await baseQuery.eq('is_online', true).limit(200);
+          } catch (e) {
+            onlineResponse = await baseQuery.limit(200);
+          }
+
+          final rows = (onlineResponse as List);
+          for (final row in rows) {
+            final userId = row['id']?.toString() ?? '';
+            final email = row['email']?.toString() ?? '';
+            if (userId.isNotEmpty && existingPassengerIds.contains(userId)) {
+              continue;
+            }
+            if (email.isNotEmpty && existingPassengerEmails.contains(email)) {
+              continue;
+            }
+
+            final latValue = row['latitude'];
+            final lngValue = row['longitude'];
+            double? lat;
+            double? lng;
+
+            if (latValue != null) {
+              lat = latValue is num
+                  ? latValue.toDouble()
+                  : (latValue is String ? double.tryParse(latValue) : null);
+            }
+            if (lngValue != null) {
+              lng = lngValue is num
+                  ? lngValue.toDouble()
+                  : (lngValue is String ? double.tryParse(lngValue) : null);
+            }
+
+            if (lat != null && lng != null && lat != 0.0 && lng != 0.0) {
+              additionalPassengers.add({
+                'id': userId.isNotEmpty ? userId : email,
+                'name': row['full_name']?.toString() ?? 'Passenger',
+                'latitude': lat,
+                'longitude': lng,
+                'status': _mapRideStatusToBookingStatus(
+                    row['ride_status']?.toString()),
+                'passenger_id': userId,
+                'passenger_email': email,
+                'is_booking': false,
+              });
+            }
+          }
+        } catch (e) {
+          print('Error fetching online passengers from users table: $e');
+        }
+
+        final mergedPassengers = [
+          ...passengers,
+          ...additionalPassengers,
+        ];
+
         print(
-            'Found ${passengers.length} active passengers with valid locations');
+            'Found ${mergedPassengers.length} active passengers with valid locations');
 
         // Only update state if passenger data has actually changed
         // This prevents unnecessary rebuilds when data is the same
-        final hasChanged = _activePassengers.length != passengers.length ||
-            !_passengerListsEqual(_activePassengers, passengers);
+        final hasChanged =
+            _activePassengers.length != mergedPassengers.length ||
+                !_passengerListsEqual(_activePassengers, mergedPassengers);
 
         if (hasChanged && mounted) {
           setState(() {
-            _activePassengers = passengers;
+            _activePassengers = mergedPassengers;
           });
-          print('📍 Updated ${passengers.length} active passenger markers on map');
+          print(
+              '📍 Updated ${mergedPassengers.length} active passenger markers on map');
 
           if (_mapController != null &&
               (_onlineDrivers.isNotEmpty || _activePassengers.isNotEmpty)) {
@@ -672,6 +788,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
                     'latitude': lat,
                     'longitude': lng,
                     'status': ride['status']?.toString() ?? 'pending',
+                    'is_booking': true,
                   };
                 }
                 return null;
@@ -1304,7 +1421,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
 
       // Get driver verification status
       final verificationStatus = res['driver_verification_status'] as String?;
-      final driverRole = (res['role'] as String?)?.trim()?.toLowerCase() ?? '';
+      final driverRole = (res['role'] as String?)?.trim().toLowerCase() ?? '';
 
       setState(() {
         _userId = (res['id'] as String?)?.trim();
@@ -1698,7 +1815,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
                   : null,
             })
             .eq('id', _userId!);
-      } else if (email != null && email.isNotEmpty) {
+      } else if (email.isNotEmpty) {
         updateQuery = client
             .from('users')
             .update({
@@ -2886,6 +3003,26 @@ EXECUTE FUNCTION set_updated_at();
   }
 
   Widget _buildActiveRide() {
+    final isScheduledActive = _currentBookingType == 'scheduled' &&
+        _currentScheduledTime != null &&
+        _currentScheduledTime!.isNotEmpty;
+    DateTime? scheduledDateTime;
+    Duration? scheduledRemaining;
+    String scheduledDisplay = '';
+
+    if (isScheduledActive) {
+      try {
+        scheduledDateTime = DateTime.parse(_currentScheduledTime!);
+        scheduledRemaining = scheduledDateTime.difference(DateTime.now());
+        scheduledDisplay =
+            DateFormat('MMM d, yyyy HH:mm').format(scheduledDateTime);
+      } catch (e) {
+        scheduledDateTime = null;
+        scheduledRemaining = null;
+        scheduledDisplay = '';
+      }
+    }
+
     return Container(
       padding: EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -2923,6 +3060,53 @@ EXECUTE FUNCTION set_updated_at();
               ],
             ),
           ),
+          if (scheduledDateTime != null && scheduledRemaining != null) ...[
+            SizedBox(height: 12),
+            Container(
+              padding: EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.orange.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.orange.withOpacity(0.3)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.schedule, color: Colors.orange[700], size: 18),
+                      SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          "Scheduled pickup: $scheduledDisplay",
+                          style: TextStyle(
+                            color: Colors.orange[800],
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Icon(Icons.timer, color: Colors.orange[700], size: 18),
+                      SizedBox(width: 6),
+                      Text(
+                        "Time remaining: ${_formatCountdown(scheduledRemaining)}",
+                        style: TextStyle(
+                          color: Colors.orange[800],
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
           SizedBox(height: 15),
           Container(
             height: ResponsiveHelper.responsiveHeight(
@@ -4107,6 +4291,7 @@ EXECUTE FUNCTION set_updated_at();
 
   Widget _buildActivePassengerCard(Map<String, dynamic> passenger) {
     final status = passenger['status']?.toString() ?? 'pending';
+    final statusLower = status.toLowerCase();
     final passengerName = passenger['name'] as String? ?? 'Passenger';
     final latitude = passenger['latitude'] as double?;
     final longitude = passenger['longitude'] as double?;
@@ -4120,7 +4305,7 @@ EXECUTE FUNCTION set_updated_at();
     switch (status) {
       case 'pending':
         statusColor = Colors.orange;
-        statusText = 'Waiting for Driver';
+        statusText = 'Online Passenger';
         statusIcon = Icons.access_time;
         break;
       case 'accepted':
@@ -4358,6 +4543,8 @@ EXECUTE FUNCTION set_updated_at();
         setState(() {
           _hasActiveRide = true;
           _currentBookingId = bookingId; // Track the booking ID
+          _currentBookingType = 'scheduled';
+          _currentScheduledTime = request['scheduled_time']?.toString();
           _passengerName = request['passenger_name']?.toString() ?? 'Passenger';
           _pickupLocation =
               request['pickup_address']?.toString() ?? 'Pickup Location';
@@ -4491,6 +4678,9 @@ EXECUTE FUNCTION set_updated_at();
           _hasActiveRide = true;
           _currentBookingId = bookingId; // Track the booking ID
           _currentBookingStatus = 'accepted'; // Initialize status
+          _currentBookingType =
+              request['booking_type']?.toString() ?? 'immediate';
+          _currentScheduledTime = request['scheduled_time']?.toString();
           _passengerName = request['passenger_name']?.toString() ?? 'Passenger';
           _pickupLocation =
               request['pickup_address']?.toString() ?? 'Pickup Location';
@@ -7416,6 +7606,8 @@ EXECUTE FUNCTION set_updated_at();
         _todayEarnings += fareValue;
         _currentRideStatus = "Online - Waiting for rides";
         _currentBookingId = null;
+        _currentBookingType = null;
+        _currentScheduledTime = null;
         _passengerName = "";
         _pickupLocation = "";
         _destination = "";
@@ -9033,7 +9225,9 @@ EXECUTE FUNCTION set_updated_at();
   void _showPassengerDetails(Map<String, dynamic> passenger) {
     final passengerName = passenger['name'] as String? ?? 'Passenger';
     final status = passenger['status']?.toString() ?? 'pending';
+    final statusLower = status.toLowerCase();
     final bookingId = passenger['id']?.toString() ?? '';
+    final isBooking = passenger['is_booking'] == true;
     
     showDialog(
       context: context,
@@ -9120,7 +9314,7 @@ EXECUTE FUNCTION set_updated_at();
                       ],
                     ),
                   ),
-                  if (status == 'pending') ...[
+                  if (statusLower == 'pending' && isBooking) ...[
                     SizedBox(height: 16),
                     ElevatedButton.icon(
                       onPressed: () {
@@ -9145,6 +9339,20 @@ EXECUTE FUNCTION set_updated_at();
             ),
           ),
           actions: [
+            if (statusLower != 'pending' && bookingId.isNotEmpty && isBooking)
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  _confirmCancelActiveBooking(passenger);
+                },
+                child: Text(
+                  "Cancel Ride",
+                  style: TextStyle(
+                    fontSize: ResponsiveHelper.bodySize(context),
+                    color: Colors.red,
+                  ),
+                ),
+              ),
             TextButton(
               onPressed: () => Navigator.pop(context),
               child: Text(
@@ -9158,6 +9366,118 @@ EXECUTE FUNCTION set_updated_at();
         );
       },
     );
+  }
+
+  Future<void> _confirmCancelActiveBooking(Map<String, dynamic> passenger) async {
+    final bookingId = passenger['id']?.toString() ?? '';
+    if (bookingId.isEmpty) {
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Text('Cancel Ride'),
+          content: Text('Cancel this ride for the passenger?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: Text('No'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+              onPressed: () => Navigator.pop(context, true),
+              child: Text('Yes, Cancel'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) {
+      return;
+    }
+
+    await _cancelBookingByDriver(passenger);
+  }
+
+  Future<void> _cancelBookingByDriver(Map<String, dynamic> passenger) async {
+    final bookingId = passenger['id']?.toString();
+    if (bookingId == null || bookingId.isEmpty) {
+      return;
+    }
+
+    try {
+      await AppSupabase.initialize();
+      final client = AppSupabase.client;
+      final passengerId = passenger['passenger_id']?.toString();
+
+      await client.from('bookings').update({
+        'status': 'cancelled',
+        'cancelled_at': DateTime.now().toIso8601String(),
+        'updated_at': DateTime.now().toIso8601String(),
+      }).eq('id', bookingId);
+
+      if (passengerId != null && passengerId.isNotEmpty) {
+        try {
+          await client.from('notifications').insert({
+            'user_id': passengerId,
+            'type': 'booking_cancelled',
+            'title': 'Booking Cancelled',
+            'message': 'Driver has cancelled the booking.',
+            'booking_id': bookingId,
+          });
+        } catch (e) {
+          print('Error sending cancellation notification to passenger: $e');
+        }
+      }
+
+      if (_currentBookingId == bookingId) {
+        setState(() {
+          _hasActiveRide = false;
+          _currentRideStatus = "Online - Waiting for rides";
+          _currentBookingId = null;
+          _currentBookingType = null;
+          _currentScheduledTime = null;
+          _passengerName = "";
+          _pickupLocation = "";
+          _destination = "";
+          _rideFare = 0.0;
+          _passengerLocation = null;
+          _destinationLocation = null;
+          _routePoints = [];
+          _showRoute = false;
+        });
+      }
+
+      _scheduledBookingTimerObjects[bookingId]?.cancel();
+      _scheduledBookingTimerObjects.remove(bookingId);
+      _scheduledBookingTimers.remove(bookingId);
+
+      setState(() {
+        _activePassengers.removeWhere((p) => p['id']?.toString() == bookingId);
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Booking cancelled.'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+
+      _fetchActivePassengers();
+      _fetchAllBookings();
+    } catch (e) {
+      print('Error cancelling booking: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error cancelling booking. Please try again.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 
   Color _getStatusColor(String status) {

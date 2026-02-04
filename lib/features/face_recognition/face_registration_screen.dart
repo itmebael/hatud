@@ -16,8 +16,10 @@ import 'package:gal/gal.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:hatud_tricycle_app/common/responsive_helper.dart';
+import 'package:hatud_tricycle_app/common/my_colors.dart';
 
 import '../../utils/permission_handler.dart';
+import '../../supabase_client.dart';
 
 import 'dart:async';
 
@@ -54,11 +56,10 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
 
   final TextEditingController _userIdController = TextEditingController();
 
-  static const Color accentBlue = Color(0xFF0D47A1);
-
   // new
   final List<String> _uploadedImageUrls = [];
   bool _isUploading = false;
+  String? _statusMessage;
 
   final steps = [
     FaceCaptureStep(
@@ -137,6 +138,8 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
 
   Future<void> _prefillUserInfo() async {
     try {
+      // Ensure Supabase is initialized
+      await AppSupabase.initialize();
       final client = Supabase.instance.client;
       final user = client.auth.currentUser;
       // If Supabase Auth isn't used, fall back to the values passed in.
@@ -157,11 +160,15 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
           });
         }
 
+        // In sign-up flow (prefilledUserId), we ALWAYS allow registration
+        // because we are creating a NEW user account.
+        // We do NOT check for existing name collisions here.
+        
         // Skip registration if already enrolled
-        await _maybeSkipIfEnrolled(displayName);
+        // await _maybeSkipIfEnrolled(displayName);
 
         // Check if face registration is already complete
-        await _checkIfRegistrationComplete(displayName);
+        // await _checkIfRegistrationComplete(displayName);
         return;
       }
 
@@ -189,6 +196,7 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
 
       if (mounted) {
         setState(() {
+          // Ensure this stays consistent with the first full name entered
           _userIdController.text = displayName;
         });
       }
@@ -203,19 +211,33 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
 
   Future<void> _checkIfRegistrationComplete(String displayName) async {
     try {
+      // Ensure Supabase is initialized
+      await AppSupabase.initialize();
       final client = Supabase.instance.client;
 
-      print('Checking registration completion for: "$displayName"');
+      print('Checking registration completion for: "$displayName" (User ID: $userId)');
 
-      // Check if full_name exists in face_embeddings table
-      final existing = await client
-          .from('face_embeddings')
-          .select('id, embedding, name')
-          .eq('name', displayName)
-          .limit(1)
-          .maybeSingle();
+      // Check if user exists in face_embeddings table
+      // Prioritize checking by user_id if available to avoid name collisions
+      dynamic existing;
+      
+      if (userId != null && userId!.isNotEmpty) {
+        existing = await client
+            .from('face_embeddings')
+            .select('id, embedding, name')
+            .eq('user_id', userId!)
+            .limit(1)
+            .maybeSingle();
+      } else {
+        existing = await client
+            .from('face_embeddings')
+            .select('id, embedding, name')
+            .eq('name', displayName)
+            .limit(1)
+            .maybeSingle();
+      }
 
-      print('Found existing record for "$displayName": $existing');
+      print('Found existing record: $existing');
 
       if (existing != null) {
         print('Embedding is null: ${existing['embedding'] == null}');
@@ -260,22 +282,36 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
 
   Future<void> _maybeSkipIfEnrolled(String displayName) async {
     try {
+      // Ensure Supabase is initialized
+      await AppSupabase.initialize();
       final client = Supabase.instance.client;
 
-      // Use only the displayName for consistency with Records screen
-      final identifiers = <String>{displayName}..removeWhere((e) => e.isEmpty);
-
       Map<String, dynamic>? existing;
-      for (final id in identifiers) {
-        final row = await client
+
+      // Prioritize checking by user_id
+      if (userId != null && userId!.isNotEmpty) {
+        existing = await client
             .from('face_embeddings')
             .select('id, embedding, name')
-            .eq('name', id)
+            .eq('user_id', userId!)
             .limit(1)
             .maybeSingle();
-        if (row != null && row['embedding'] != null) {
-          existing = row;
-          break;
+      } 
+      
+      if (existing == null) {
+        // Fallback to name check if no user_id match (or legacy data)
+        final identifiers = <String>{displayName}..removeWhere((e) => e.isEmpty);
+        for (final id in identifiers) {
+          final row = await client
+              .from('face_embeddings')
+              .select('id, embedding, name')
+              .eq('name', id)
+              .limit(1)
+              .maybeSingle();
+          if (row != null && row['embedding'] != null) {
+            existing = row;
+            break;
+          }
         }
       }
 
@@ -375,13 +411,13 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
             fontFamily: 'Poppins',
             fontStyle: FontStyle.italic,
           ),
-          prefixIcon: Icon(icon, color: accentBlue),
+          prefixIcon: Icon(icon, color: kPrimaryColor),
           enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(10),
-            borderSide: BorderSide(color: accentBlue.withValues(alpha: 0.35)),
+            borderSide: BorderSide(color: kPrimaryColor.withValues(alpha: 0.35)),
           ),
           focusedBorder: const OutlineInputBorder(
-            borderSide: BorderSide(color: accentBlue, width: 1.8),
+            borderSide: BorderSide(color: kPrimaryColor, width: 1.8),
           ),
           contentPadding: const EdgeInsets.symmetric(
             horizontal: 16,
@@ -690,15 +726,24 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
           const SnackBar(
             content: Text("✅ Images saved to gallery"),
             backgroundColor: Colors.green,
+            duration: Duration(seconds: 2),
           ),
         );
+        
+        // Navigate back to sign up screen after saving
+        await Future.delayed(const Duration(milliseconds: 500));
+        if (context.mounted && Navigator.of(context).canPop()) {
+          Navigator.of(context).pop(true);
+        }
       }
     } catch (e) {
       _showError("Failed to save images: $e");
     } finally {
-      setState(() {
-        _isProcessing = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+        });
+      }
     }
   }
 
@@ -710,76 +755,141 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
 
     setState(() {
       _isUploading = true;
+      _statusMessage = "Saving face images...";
     });
 
     try {
+      // Ensure Supabase is initialized before any operations
+      await AppSupabase.initialize();
+      
       final resolvedUserId = userId ?? widget.prefilledUserId;
       if (resolvedUserId == null || resolvedUserId.isEmpty) {
         _showError("Missing user id. Please log in again and retry.");
+        setState(() {
+          _isUploading = false;
+        });
         return;
       }
 
       final client = Supabase.instance.client;
+      
+      // Debug Auth State
+      final currentUser = client.auth.currentUser;
+      print("Face Registration Upload: Current Auth User: ${currentUser?.id}");
+      print("Face Registration Upload: Target User ID: $resolvedUserId");
+      
+      // Allow upload if user is authenticated OR if we are in signup flow (prefilledUserId is set)
+      if (currentUser == null && widget.prefilledUserId == null) {
+        print("WARNING: User is NOT authenticated and not in signup flow.");
+        _showError("You are not logged in. Please login and try again.");
+        setState(() {
+          _isUploading = false;
+        });
+        return;
+      } else if (currentUser != null && currentUser.id != resolvedUserId) {
+         print("WARNING: Auth User ID (${currentUser.id}) does not match Target User ID ($resolvedUserId).");
+      }
+
       List<String> urls = [];
 
-      for (var capture in _capturedFaces) {
+      // Upload each face image with progress feedback
+      for (int i = 0; i < _capturedFaces.length; i++) {
+        if (!mounted) return;
+        
+        setState(() {
+          _statusMessage = "Uploading image ${i + 1} of ${_capturedFaces.length}...";
+        });
+
+        final capture = _capturedFaces[i];
         final origFile = capture.originalFile;
+        
+        // Check if file exists
+        if (!origFile.existsSync()) {
+          _showError("Image file not found. Please try again.");
+          setState(() {
+            _isUploading = false;
+          });
+          return;
+        }
+
+        // USE USER ID FOLDER to avoid RLS conflicts and keep organized
         final origFileName =
-            "Original_${resolvedUserId}_${DateTime.now().millisecondsSinceEpoch}.jpg";
+            "$resolvedUserId/Original_${DateTime.now().millisecondsSinceEpoch}_$i.jpg";
 
-        await client.storage.from('faces').upload(origFileName, origFile);
+        try {
+          // Upload with timeout handling
+          await client.storage.from('faces').upload(origFileName, origFile, 
+              fileOptions: const FileOptions(upsert: true) // Allow overwriting if needed
+          ).timeout(
+                const Duration(seconds: 45), // Increased timeout
+                onTimeout: () {
+                  throw Exception("Upload timeout. Please check your internet connection.");
+                },
+              );
 
-        final urlResponse = client.storage
-            .from('faces')
-            .getPublicUrl(origFileName);
-        urls.add(urlResponse);
+          final urlResponse = client.storage
+              .from('faces')
+              .getPublicUrl(origFileName);
+          urls.add(urlResponse);
+        } catch (uploadError) {
+          print("Upload error for image $i: $uploadError");
+          _showError("Failed to upload image ${i + 1}: $uploadError");
+          setState(() {
+            _isUploading = false;
+          });
+          return;
+        }
       }
 
       setState(() {
         _uploadedImageUrls.addAll(urls);
+        _statusMessage = "Saving registration data...";
       });
 
       // ✅ Ensure a face_embeddings row exists for this user (by name)
       try {
-        // Use the same name resolution logic as Records screen
-        String displayName = 'Unknown';
-        final user = client.auth.currentUser;
-        if (user != null) {
-          try {
-            final details = await client
-                .from('users')
-                .select('full_name')
-                .eq('id', user.id)
-                .maybeSingle();
-            final fullName = details != null
-                ? details['full_name'] as String?
-                : null;
-            displayName = fullName ?? user.email ?? 'Unknown';
-          } catch (_) {
-            displayName = user.email ?? 'Unknown';
+        // Use the full name as first entered (from sign up) as the single source of truth.
+        String displayName = _userIdController.text.trim();
+
+        // If, for some reason, the controller is empty, fall back to Supabase info.
+        if (displayName.isEmpty) {
+          final user = client.auth.currentUser;
+          if (user != null) {
+            try {
+              final details = await client
+                  .from('users')
+                  .select('full_name')
+                  .eq('id', user.id)
+                  .maybeSingle();
+              final fullName = details != null
+                  ? details['full_name'] as String?
+                  : null;
+              displayName = fullName ?? user.email ?? 'Unknown';
+            } catch (_) {
+              displayName = user.email ?? 'Unknown';
+            }
+          } else {
+            displayName = 'Unknown';
           }
-        } else {
-          // No Supabase Auth session; use whatever the UI has for the name.
-          final typed = _userIdController.text.trim();
-          if (typed.isNotEmpty) displayName = typed;
+
+          if (mounted) {
+            setState(() {
+              _userIdController.text = displayName;
+            });
+          }
         }
 
-        // Use only the displayName for consistency with Records screen
-        final identifiers = <String>{displayName}
-          ..removeWhere((e) => e.isEmpty);
-
+        // Check if THIS specific user ID is already registered
+        // We check by user_id, NOT by name, to avoid conflicts if multiple users share a name
         Map<String, dynamic>? existing;
-        for (final id in identifiers) {
-          final row = await client
+        try {
+           existing = await client
               .from('face_embeddings')
               .select('id, embedding, name')
-              .eq('name', id)
-              .limit(1)
+              .eq('user_id', resolvedUserId)
               .maybeSingle();
-          if (row != null) {
-            existing = row;
-            break;
-          }
+        } catch (e) {
+           print("Error checking existing registration: $e");
         }
 
         if (existing == null) {
@@ -813,21 +923,79 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
 
       // ✅ Insert the uploaded URLs into your processing queue table
       // Also include the user's full name for downstream processing instead of relying solely on user_id
-      final currentUser = client.auth.currentUser;
-      String nameForQueue = _userIdController.text.trim();
-      if (nameForQueue.isEmpty) {
-        nameForQueue = currentUser?.email ?? 'User';
-      }
+      final String nameForQueue = _userIdController.text.trim().isEmpty
+          ? 'User'
+          : _userIdController.text.trim();
 
-      await client.from('to_extract_embedding').insert({
-        'urls': urls, // array of public URLs
-        'extracted': false, // mark as not processed
-        'created_at': DateTime.now().toIso8601String(),
-        'user_id': resolvedUserId, // kept for compatibility
-        'name': nameForQueue, // full name to be used by extractor
+      setState(() {
+        _statusMessage = "Finalizing registration...";
       });
 
+      // 1. Insert into processing queue (for future backend processing)
+      try {
+        await client.from('to_extract_embedding').insert({
+          'urls': urls, // array of public URLs
+          'extracted': false, // mark as not processed
+          'created_at': DateTime.now().toIso8601String(),
+          'user_id': resolvedUserId, // kept for compatibility
+          'name': nameForQueue, // full name to be used by extractor
+        });
+      } catch (dbError) {
+        print("Queue insert error (non-fatal): $dbError");
+        // We continue because we want to at least try to save the user as "registered"
+      }
+
+      // 2. Insert directly into face_embeddings with placeholder
+      // This ensures the user is marked as "registered" immediately so they can attempt login
+      try {
+        // Check if entry already exists for this user_id to avoid duplicates
+        final existingUser = await client
+            .from('face_embeddings')
+            .select('id')
+            .eq('user_id', resolvedUserId)
+            .maybeSingle();
+
+        if (existingUser == null) {
+          // Create a dummy vector for compatibility with vector(512) column
+          // This allows the row to be created successfully. 
+          // The actual embedding should be computed by a backend function later.
+          final dummyVector = List<double>.filled(512, 0.0);
+          
+          await client.from('face_embeddings').insert({
+            'user_id': resolvedUserId,
+            'name': nameForQueue,
+            'embedding': dummyVector, // Use dummy vector instead of string
+            'created_at': DateTime.now().toIso8601String(),
+            'updated_at': DateTime.now().toIso8601String(),
+          });
+        } else {
+           // Update existing entry
+           final dummyVector = List<double>.filled(512, 0.0);
+           
+           await client.from('face_embeddings').update({
+            'name': nameForQueue,
+            'embedding': dummyVector, // Use dummy vector instead of string
+            'updated_at': DateTime.now().toIso8601String(),
+          }).eq('user_id', resolvedUserId);
+        }
+      } catch (dbError) {
+        print("Face embedding insert error: $dbError");
+        _showError("Failed to save registration data: $dbError");
+        setState(() {
+          _isUploading = false;
+        });
+        return;
+      }
+
       if (context.mounted) {
+        // If we are in Sign Up mode (prefilledUserId is set), just pop back
+        if (widget.prefilledUserId != null) {
+          if (Navigator.of(context).canPop()) {
+            Navigator.of(context).pop(true);
+          }
+          return;
+        }
+
         await showDialog(
           context: context,
           barrierDismissible: false,
@@ -850,11 +1018,25 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
         }
       }
     } catch (e) {
+      print("Upload error: $e");
       _showError("Upload failed: $e");
+      if (mounted) {
+        setState(() {
+          _isUploading = false;
+          _statusMessage = "Upload failed. Please try again.";
+        });
+      }
     } finally {
-      setState(() {
-        _isUploading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isUploading = false;
+          if (_statusMessage == "Saving face images..." || 
+              _statusMessage == "Saving registration data..." ||
+              _statusMessage == "Finalizing registration...") {
+            _statusMessage = null;
+          }
+        });
+      }
     }
   }
 
@@ -879,7 +1061,7 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
     return Scaffold(
       appBar: AppBar(
         title: const Text('Face Recognition Registration'),
-        backgroundColor: accentBlue,
+        backgroundColor: kPrimaryColor,
         foregroundColor: Colors.white,
       ),
       body: _isUnsupportedPlatform
@@ -980,7 +1162,7 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
                 _isProcessing ? "Processing..." : "Start Face Registration",
               ),
               style: ElevatedButton.styleFrom(
-                backgroundColor: accentBlue,
+                backgroundColor: kPrimaryColor,
                 foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(
                   horizontal: 24,
@@ -998,17 +1180,17 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: Colors.blue.withValues(alpha: 0.1),
+                  color: kPrimaryColor.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Column(
                   children: [
                     Text(
                       "Step $stepIndex of ${steps.length}",
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.bold,
-                        color: Colors.blue,
+                        color: kPrimaryColor,
                       ),
                     ),
                     const SizedBox(height: 8),
@@ -1030,8 +1212,46 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
               ),
             ],
 
+            // Show upload progress if uploading
+            if (_isUploading && _statusMessage != null) ...[
+              const SizedBox(height: 20),
+              Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: kPrimaryColor.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: kPrimaryColor.withValues(alpha: 0.3),
+                  ),
+                ),
+                child: Column(
+                  children: [
+                    const CircularProgressIndicator(
+                      color: kPrimaryColor,
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      _statusMessage ?? "Saving...",
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                        color: kPrimaryColor,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      "Please wait while we save your face registration.",
+                      style: TextStyle(fontSize: 14, color: Colors.grey),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+
             // Show completion UI
-            if (stepIndex >= steps.length) ...[
+            if (stepIndex >= steps.length && !_isUploading) ...[
               const SizedBox(height: 20),
               Container(
                 padding: const EdgeInsets.all(20),
@@ -1039,7 +1259,7 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
                   gradient: LinearGradient(
                     colors: [
                       Colors.green.withValues(alpha: 0.1),
-                      Colors.blue.withValues(alpha: 0.1),
+                      kPrimaryColor.withValues(alpha: 0.1),
                     ],
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
@@ -1118,7 +1338,7 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
                         _isProcessing ? "Saving..." : "Save to Gallery",
                       ),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: accentBlue,
+                        backgroundColor: kPrimaryColor,
                         foregroundColor: Colors.white,
                         padding: const EdgeInsets.symmetric(
                           horizontal: 24,
@@ -1173,7 +1393,7 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
               icon: const Icon(Icons.arrow_back),
               label: const Text('Go Back'),
               style: ElevatedButton.styleFrom(
-                backgroundColor: accentBlue,
+                backgroundColor: kPrimaryColor,
                 foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(
                   horizontal: 24,
@@ -1261,8 +1481,8 @@ class _LivenessDetectionScreenState extends State<_LivenessDetectionScreen> {
     _faceDetector = FaceDetector(
       options: FaceDetectorOptions(
         enableClassification: true,
-        enableLandmarks: true,
-        enableContours: true,
+        enableLandmarks: false,
+        enableContours: false,
         enableTracking: false,
         minFaceSize: 0.5,
         performanceMode: FaceDetectorMode.accurate,
@@ -1364,7 +1584,7 @@ class _LivenessDetectionScreenState extends State<_LivenessDetectionScreen> {
                       width: 20,
                       height: 20,
                       decoration: BoxDecoration(
-                        color: _faceDetected ? Colors.teal : Colors.grey,
+                        color: _faceDetected ? kPrimaryColor : Colors.grey,
                         borderRadius: BorderRadius.circular(4),
                       ),
                       child: const Icon(Icons.face, color: Colors.white, size: 12),
@@ -1590,9 +1810,9 @@ class CircularFramePainter extends CustomPainter {
     final center = Offset(size.width / 2, size.height / 2);
     final radius = size.width / 2 - 10;
 
-    // Create dashed circle - green if face detected and positioned correctly, white otherwise
+    // Create dashed circle - orange if face detected and positioned correctly, white otherwise
     final paint = Paint()
-      ..color = faceDetected ? Colors.green : Colors.white
+      ..color = faceDetected ? kPrimaryColor : Colors.white
       ..strokeWidth = 3.0
       ..style = PaintingStyle.stroke;
 
@@ -1621,7 +1841,7 @@ class CircularFramePainter extends CustomPainter {
     // Add inner circle for better face guidance - also changes color
     final innerPaint = Paint()
       ..color = faceDetected
-          ? Colors.green.withValues(alpha: 0.5)
+          ? kPrimaryColor.withValues(alpha: 0.5)
           : Colors.white.withValues(alpha: 0.3)
       ..strokeWidth = 1.0
       ..style = PaintingStyle.stroke;

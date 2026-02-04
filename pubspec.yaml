@@ -96,7 +96,7 @@ dependencies:
   # Excel/CSV export functionality
   csv: ^5.0.3
   # File handling for export
-  file_picker: ^6.1.1
+  file_picker: ^10.3.10
   # Scrollable bottom sheet (removed due to null-safety constraints)
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.

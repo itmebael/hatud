@@ -44,4 +44,71 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
+# Vercel
 .vercel
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Build directories
+/build/
+/web/
+
+# IDE
+.vscode/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.env/
+venv/
+env/
+ENV/
+
+# Logs
+*.log
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Python packaging
+*.egg
+*.egg-info/
+
+# Virtual environments
+.venv/
+
+# Temporary files
+*.tmp
+*.temp
+
+# Debug files
+*.pdb
+
+# Coverage reports
+*.gcov
+*.gcno
+*.gcda
+
+# Database
+*.sqlite
+*.db
